@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+# Jupyter 6부터 기본 사용 예정인 플랫폼별 경로 체계를 미리 활성화한다.
+os.environ.setdefault("JUPYTER_PLATFORM_DIRS", "1")
 
 from jupyter_client import KernelManager
 

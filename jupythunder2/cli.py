@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.table import Table
 
 from . import __version__
 from .agent import PlanningAgent
@@ -17,9 +18,33 @@ from .ascii_art import render_splash
 from .debugging import DebuggingAgent
 from .history import ExecutionHistory, build_executed_cell
 from .kernel import KernelExecutionError, KernelSession
+from .workflows import Workflow, WorkflowRepository, WorkflowRunner, WorkflowStep
 
 app = typer.Typer(help="jupythunder2 CLI 에이전트")
+workflow_app = typer.Typer(help="워크플로우 자동화")
+app.add_typer(workflow_app, name="workflow")
 console = Console()
+
+
+def _load_history(history_file: Optional[Path], history_limit: int) -> ExecutionHistory:
+    if history_file is not None:
+        return ExecutionHistory.load(history_file, limit=history_limit)
+    return ExecutionHistory(limit=history_limit)
+
+
+def _render_plan(plan) -> None:
+    console.print(Panel(plan.summary or "요약 정보가 제공되지 않았습니다.", title="요약"))
+    console.print(plan.to_rich_table())
+
+
+def _render_code_panel(code: str, *, title: str = "코드") -> None:
+    console.print(
+        Panel(
+            Syntax(code, "python", theme="monokai", line_numbers=True),
+            title=title,
+            border_style="cyan",
+        )
+    )
 
 
 @app.callback(invoke_without_command=True)
@@ -95,8 +120,7 @@ def plan(
         console.print(json.dumps(execution_plan.to_dict(), ensure_ascii=False, indent=2))
         return
 
-    console.print(Panel(execution_plan.summary or "요약 정보가 제공되지 않았습니다.", title="요약"))
-    console.print(execution_plan.to_rich_table())
+    _render_plan(execution_plan)
 
 
 @app.command(name="execute", short_help="코드 셀을 실행하고 결과를 출력")
@@ -185,19 +209,9 @@ def execute_cell(
     if splash:
         console.print(render_splash(), style="bold cyan")
 
-    history = (
-        ExecutionHistory.load(history_file, limit=history_limit)
-        if history_file is not None
-        else ExecutionHistory(limit=history_limit)
-    )
+    history = _load_history(history_file, history_limit)
 
-    console.print(
-        Panel(
-            Syntax(code, "python", theme="monokai", line_numbers=True),
-            title="코드",
-            border_style="cyan",
-        )
-    )
+    _render_code_panel(code)
 
     try:
         with KernelSession(kernel_name=kernel) as session:
@@ -228,6 +242,333 @@ def execute_cell(
                 history=history,
             )
             _render_debug_suggestion(suggestion)
+        raise typer.Exit(code=1)
+
+
+@workflow_app.command("list", short_help="저장된 워크플로우 나열")
+def workflow_list() -> None:
+    repo = WorkflowRepository()
+    workflows = repo.list()
+    if not workflows:
+        console.print("저장된 워크플로우가 없습니다.", style="yellow")
+        return
+
+    table = Table(title="워크플로우 목록")
+    table.add_column("이름", style="bold")
+    table.add_column("단계 수", justify="right")
+    table.add_column("설명")
+
+    for workflow in workflows:
+        table.add_row(workflow.name, str(len(workflow.steps)), workflow.description or "-")
+
+    console.print(table)
+
+
+@workflow_app.command("show", short_help="워크플로우 상세 보기")
+def workflow_show(name: str) -> None:
+    repo = WorkflowRepository()
+    try:
+        workflow = repo.load(name)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"워크플로우 '{name}'을(를) 찾을 수 없습니다.") from exc
+
+    console.print(
+        Panel(
+            workflow.description or "설명 없음",
+            title=f"Workflow: {workflow.name}",
+            border_style="cyan",
+        )
+    )
+
+    if not workflow.steps:
+        console.print("등록된 단계가 없습니다.", style="yellow")
+        return
+
+    for index, step in enumerate(workflow.steps, start=1):
+        header = f"[{index}] {step.name} ({step.step_type})"
+        body_lines = []
+        if step.description:
+            body_lines.append(step.description)
+        if step.step_type == "plan":
+            if step.goal:
+                body_lines.append(f"goal: {step.goal}")
+            if step.context:
+                body_lines.append(f"context: {step.context}")
+        body = "\n".join(line for line in body_lines if line) or "설명 없음"
+        console.print(Panel(body, title=header, border_style="blue"))
+
+        if step.step_type == "execute" and step.code:
+            _render_code_panel(step.code, title="코드")
+
+
+@workflow_app.command("delete", short_help="워크플로우 삭제")
+def workflow_delete(
+    name: str,
+    force: bool = typer.Option(False, "--force", "-f", help="확인 없이 삭제"),
+) -> None:
+    repo = WorkflowRepository()
+    try:
+        repo.load(name)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"워크플로우 '{name}'을(를) 찾을 수 없습니다.") from exc
+
+    if not force and not typer.confirm(f"워크플로우 '{name}'을(를) 삭제할까요?", default=False):
+        console.print("삭제를 취소했습니다.", style="dim")
+        return
+
+    repo.delete(name)
+    console.print(f"워크플로우 '{name}'을(를) 삭제했습니다.", style="bold red")
+
+
+@workflow_app.command("add-plan", short_help="plan 단계 추가")
+def workflow_add_plan(
+    name: str,
+    goal: str = typer.Option(..., "--goal", help="계획 단계에서 사용할 목표"),
+    context: Optional[str] = typer.Option(None, "--context", help="추가 컨텍스트"),
+    title: Optional[str] = typer.Option(None, "--title", help="단계 제목"),
+    description: str = typer.Option("", "--description", "-d", help="단계 설명"),
+    workflow_description: Optional[str] = typer.Option(
+        None,
+        "--workflow-description",
+        help="워크플로우 자체 설명 (신규 또는 업데이트)",
+    ),
+) -> None:
+    repo = WorkflowRepository()
+    created = False
+    try:
+        workflow = repo.load(name)
+    except FileNotFoundError:
+        workflow = Workflow(name=name, description=workflow_description or "")
+        created = True
+    else:
+        if workflow_description is not None:
+            workflow.description = workflow_description
+
+    step = WorkflowStep(
+        step_type="plan",
+        name=title,
+        description=description,
+        goal=goal,
+        context=context,
+    )
+    workflow.add_step(step)
+    repo.save(workflow)
+
+    console.print(
+        f"워크플로우 '{workflow.name}'에 plan 단계를 추가했습니다. (총 {len(workflow.steps)}단계)",
+        style="green",
+    )
+    if created:
+        console.print("새 워크플로우가 생성되었습니다.", style="dim")
+
+
+@workflow_app.command("add-exec", short_help="execute 단계 추가")
+def workflow_add_execute(
+    name: str,
+    code: Optional[str] = typer.Option(
+        None,
+        "--code",
+        "-c",
+        help="실행할 파이썬 코드",
+    ),
+    path: Optional[Path] = typer.Option(
+        None,
+        "--path",
+        "-p",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        help="코드가 담긴 파일 경로",
+    ),
+    title: Optional[str] = typer.Option(None, "--title", help="단계 제목"),
+    description: str = typer.Option("", "--description", "-d", help="단계 설명"),
+    workflow_description: Optional[str] = typer.Option(
+        None,
+        "--workflow-description",
+        help="워크플로우 자체 설명 (신규 또는 업데이트)",
+    ),
+) -> None:
+    if bool(code) == bool(path):
+        raise typer.BadParameter("--code 또는 --path 중 하나만 지정해주세요.")
+
+    if path is not None:
+        code = path.read_text()
+
+    assert code is not None
+
+    repo = WorkflowRepository()
+    created = False
+    try:
+        workflow = repo.load(name)
+    except FileNotFoundError:
+        workflow = Workflow(name=name, description=workflow_description or "")
+        created = True
+    else:
+        if workflow_description is not None:
+            workflow.description = workflow_description
+
+    step = WorkflowStep(
+        step_type="execute",
+        name=title,
+        description=description,
+        code=code,
+    )
+    workflow.add_step(step)
+    repo.save(workflow)
+
+    console.print(
+        f"워크플로우 '{workflow.name}'에 execute 단계를 추가했습니다. (총 {len(workflow.steps)}단계)",
+        style="green",
+    )
+    if created:
+        console.print("새 워크플로우가 생성되었습니다.", style="dim")
+
+
+@workflow_app.command("run", short_help="워크플로우 실행")
+def workflow_run(
+    name: str,
+    kernel: str = typer.Option("python3", "--kernel", help="사용할 커널 이름"),
+    timeout: float = typer.Option(
+        30.0,
+        "--timeout",
+        min=1.0,
+        max=300.0,
+        help="커널 응답 대기 시간(초)",
+    ),
+    history_file: Optional[Path] = typer.Option(
+        None,
+        "--history-file",
+        "-f",
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="실행 히스토리를 저장/불러올 JSON 파일",
+    ),
+    history_limit: int = typer.Option(
+        50,
+        "--history-limit",
+        min=1,
+        max=500,
+        help="히스토리에 보관할 최대 셀 개수",
+    ),
+    splash: bool = typer.Option(
+        False,
+        "--splash/--no-splash",
+        help="ASCII 아트를 출력할지 여부",
+    ),
+    suggest: bool = typer.Option(
+        True,
+        "--suggest/--no-suggest",
+        help="오류 발생 시 디버깅 제안을 사용할지 여부",
+    ),
+    provider: Optional[str] = typer.Option(
+        None,
+        "--provider",
+        help="Planning LLM 제공자",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Planning LLM 모델",
+    ),
+    dummy: bool = typer.Option(
+        False,
+        "--dummy",
+        help="Planning LLM 더미 사용",
+    ),
+    debug_provider: Optional[str] = typer.Option(
+        None,
+        "--debug-provider",
+        help="디버깅 LLM 제공자",
+    ),
+    debug_model: Optional[str] = typer.Option(
+        None,
+        "--debug-model",
+        help="디버깅 LLM 모델",
+    ),
+    debug_dummy: bool = typer.Option(
+        False,
+        "--debug-dummy",
+        help="디버깅용 더미 LLM 사용",
+    ),
+) -> None:
+    repo = WorkflowRepository()
+    try:
+        workflow = repo.load(name)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"워크플로우 '{name}'을(를) 찾을 수 없습니다.") from exc
+
+    if splash:
+        console.print(render_splash(), style="bold cyan")
+
+    history = _load_history(history_file, history_limit)
+
+    planning_agent = PlanningAgent.from_env(
+        provider_override=provider,
+        model_override=model,
+        use_dummy=True if dummy else None,
+    )
+
+    debugging_agent = None
+    if suggest:
+        debugging_agent = DebuggingAgent.from_env(
+            provider_override=debug_provider,
+            model_override=debug_model,
+            use_dummy=True if debug_dummy else None,
+        )
+
+    runner = WorkflowRunner(
+        planning_agent=planning_agent,
+        debugging_agent=debugging_agent,
+        history=history,
+    )
+
+    run_result = runner.run(
+        workflow,
+        kernel_name=kernel,
+        timeout=timeout,
+        suggest=suggest and debugging_agent is not None,
+        history_file=history_file,
+    )
+
+    console.print(
+        Panel(
+            workflow.description or "설명 없음",
+            title=f"Workflow: {workflow.name}",
+            border_style="cyan",
+        )
+    )
+
+    for index, outcome in enumerate(run_result.outcomes, start=1):
+        step = outcome.step
+        header = f"[{index}] {step.name} ({step.step_type})"
+        body_lines = []
+        if step.description:
+            body_lines.append(step.description)
+        if step.step_type == "plan":
+            if step.goal:
+                body_lines.append(f"goal: {step.goal}")
+            if step.context:
+                body_lines.append(f"context: {step.context}")
+        body = "\n".join(line for line in body_lines if line) or "설명 없음"
+        console.print(Panel(body, title=header, border_style="blue"))
+
+        if step.step_type == "execute" and step.code:
+            _render_code_panel(step.code, title="코드")
+        if outcome.plan:
+            _render_plan(outcome.plan)
+        if outcome.execution:
+            _render_execution_result(outcome.execution)
+        if outcome.suggestion:
+            _render_debug_suggestion(outcome.suggestion)
+
+    if run_result.success:
+        console.print("워크플로우가 성공적으로 완료되었습니다.", style="bold green")
+    else:
+        failed_idx = (run_result.failed_step_index or 0) + 1
+        console.print(f"{failed_idx}번째 단계에서 실패했습니다.", style="bold red")
         raise typer.Exit(code=1)
 
 

@@ -85,6 +85,11 @@ class KernelSession:
             raise KernelExecutionError("커널을 시작하지 못했습니다.") from exc
         client = self._manager.blocking_client()
         client.start_channels()
+        try:
+            client.wait_for_ready(timeout=60)
+        except Exception as exc:  # pragma: no cover - 외부 I/O
+            self._manager.shutdown_kernel(now=True)
+            raise KernelExecutionError("커널이 준비되지 않았습니다.") from exc
         self._client = client
         self._is_running = True
 

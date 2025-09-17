@@ -14,6 +14,8 @@ from rich.syntax import Syntax
 from . import __version__
 from .agent import PlanningAgent
 from .ascii_art import render_splash
+from .debugging import DebuggingAgent
+from .history import ExecutionHistory, build_executed_cell
 from .kernel import KernelExecutionError, KernelSession
 
 app = typer.Typer(help="jupythunder2 CLI 에이전트")
@@ -128,10 +130,46 @@ def execute_cell(
         max=300.0,
         help="커널 응답 대기 시간(초)",
     ),
+    history_file: Optional[Path] = typer.Option(
+        None,
+        "--history-file",
+        "-f",
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="실행 히스토리를 저장/불러올 JSON 파일",
+    ),
+    history_limit: int = typer.Option(
+        20,
+        "--history-limit",
+        min=1,
+        max=200,
+        help="히스토리에 보관할 최대 셀 개수",
+    ),
     splash: bool = typer.Option(
         False,
         "--splash/--no-splash",
         help="ASCII 아트를 출력할지 여부",
+    ),
+    suggest: bool = typer.Option(
+        True,
+        "--suggest/--no-suggest",
+        help="오류 발생 시 LLM 기반 수정 제안을 출력",
+    ),
+    debug_provider: Optional[str] = typer.Option(
+        None,
+        "--debug-provider",
+        help="디버깅 제안에 사용할 LLM 제공자",
+    ),
+    debug_model: Optional[str] = typer.Option(
+        None,
+        "--debug-model",
+        help="디버깅 제안에 사용할 모델 이름",
+    ),
+    debug_dummy: bool = typer.Option(
+        False,
+        "--debug-dummy",
+        help="LLM 대신 더미 디버깅 제안을 사용",
     ),
 ) -> None:
     """Jupyter 커널을 통해 단일 코드 셀을 실행한다."""
@@ -146,6 +184,12 @@ def execute_cell(
 
     if splash:
         console.print(render_splash(), style="bold cyan")
+
+    history = (
+        ExecutionHistory.load(history_file, limit=history_limit)
+        if history_file is not None
+        else ExecutionHistory(limit=history_limit)
+    )
 
     console.print(
         Panel(
@@ -162,9 +206,28 @@ def execute_cell(
         console.print(Panel(str(exc), title="실행 실패", style="bold red"))
         raise typer.Exit(code=1) from exc
 
+    executed_cell = build_executed_cell(code, result)
+    history.add(executed_cell)
+    if history_file is not None:
+        history.save(history_file)
+
     _render_execution_result(result)
 
     if not result.succeeded:
+        if suggest:
+            agent = DebuggingAgent.from_env(
+                provider_override=debug_provider,
+                model_override=debug_model,
+                use_dummy=True if debug_dummy else None,
+            )
+            suggestion = agent.suggest_fix(
+                failing_code=code,
+                error_name=result.error.name if result.error else "UnknownError",
+                error_value=result.error.value if result.error else "",
+                traceback=result.error.traceback if result.error else [],
+                history=history,
+            )
+            _render_debug_suggestion(suggestion)
         raise typer.Exit(code=1)
 
 
@@ -206,6 +269,17 @@ def _render_execution_result(result) -> None:
         if result.error.traceback:
             error_text.append("\n".join(result.error.traceback))
         console.print(Panel(error_text, title="error", border_style="red"))
+
+
+def _render_debug_suggestion(suggestion) -> None:
+    from rich.markdown import Markdown
+
+    console.print(Panel(suggestion.summary, title="디버깅 요약", border_style="magenta"))
+    console.print(Panel(suggestion.root_cause or "원인 정보를 제공하지 않았습니다.", title="가능한 원인", border_style="yellow"))
+    console.print(Panel(suggestion.recommendation, title="권장 조치", border_style="green"))
+
+    if suggestion.patch:
+        console.print(Panel(Markdown(f"```\n{suggestion.patch}\n```"), title="제안된 패치", border_style="cyan"))
 
 
 def run() -> None:  # pragma: no cover - Typer 실행 래퍼

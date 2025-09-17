@@ -15,6 +15,17 @@ from rich.table import Table
 from . import __version__
 from .agent import PlanningAgent
 from .ascii_art import render_splash
+from .config import (
+    AgentSettings,
+    RuntimeSettings,
+    load_agent_settings,
+    load_runtime_settings,
+    read_config,
+    get_config_path,
+    reset_config,
+    update_agent_settings,
+    update_runtime_settings,
+)
 from .debugging import DebuggingAgent
 from .history import ExecutionHistory, build_executed_cell
 from .kernel import KernelExecutionError, KernelSession
@@ -22,14 +33,25 @@ from .workflows import Workflow, WorkflowRepository, WorkflowRunner, WorkflowSte
 
 app = typer.Typer(help="jupythunder2 CLI 에이전트")
 workflow_app = typer.Typer(help="워크플로우 자동화")
+config_app = typer.Typer(help="환경설정 관리")
 app.add_typer(workflow_app, name="workflow")
+app.add_typer(config_app, name="config")
 console = Console()
 
 
-def _load_history(history_file: Optional[Path], history_limit: int) -> ExecutionHistory:
+def _load_history(
+    history_file: Optional[Path], history_limit: Optional[int]
+) -> tuple[ExecutionHistory, Optional[Path]]:
+    runtime = load_runtime_settings()
+
+    if history_file is None and runtime.default_history_file:
+        history_file = Path(runtime.default_history_file).expanduser()
+
+    limit = history_limit or runtime.history_limit
+
     if history_file is not None:
-        return ExecutionHistory.load(history_file, limit=history_limit)
-    return ExecutionHistory(limit=history_limit)
+        return ExecutionHistory.load(history_file, limit=limit), history_file
+    return ExecutionHistory(limit=limit), None
 
 
 def _render_plan(plan) -> None:
@@ -45,6 +67,14 @@ def _render_code_panel(code: str, *, title: str = "코드") -> None:
             border_style="cyan",
         )
     )
+
+
+def _workflow_repo() -> WorkflowRepository:
+    runtime = load_runtime_settings()
+    directory = runtime.workflows_dir
+    if directory:
+        return WorkflowRepository(directory=Path(directory).expanduser())
+    return WorkflowRepository()
 
 
 @app.callback(invoke_without_command=True)
@@ -163,8 +193,8 @@ def execute_cell(
         resolve_path=True,
         help="실행 히스토리를 저장/불러올 JSON 파일",
     ),
-    history_limit: int = typer.Option(
-        20,
+    history_limit: Optional[int] = typer.Option(
+        None,
         "--history-limit",
         min=1,
         max=200,
@@ -209,7 +239,7 @@ def execute_cell(
     if splash:
         console.print(render_splash(), style="bold cyan")
 
-    history = _load_history(history_file, history_limit)
+    history, resolved_history_path = _load_history(history_file, history_limit)
 
     _render_code_panel(code)
 
@@ -222,8 +252,9 @@ def execute_cell(
 
     executed_cell = build_executed_cell(code, result)
     history.add(executed_cell)
-    if history_file is not None:
-        history.save(history_file)
+    target_path = history_file or resolved_history_path
+    if target_path is not None:
+        history.save(target_path)
 
     _render_execution_result(result)
 
@@ -247,7 +278,7 @@ def execute_cell(
 
 @workflow_app.command("list", short_help="저장된 워크플로우 나열")
 def workflow_list() -> None:
-    repo = WorkflowRepository()
+    repo = _workflow_repo()
     workflows = repo.list()
     if not workflows:
         console.print("저장된 워크플로우가 없습니다.", style="yellow")
@@ -266,7 +297,7 @@ def workflow_list() -> None:
 
 @workflow_app.command("show", short_help="워크플로우 상세 보기")
 def workflow_show(name: str) -> None:
-    repo = WorkflowRepository()
+    repo = _workflow_repo()
     try:
         workflow = repo.load(name)
     except FileNotFoundError as exc:
@@ -306,7 +337,7 @@ def workflow_delete(
     name: str,
     force: bool = typer.Option(False, "--force", "-f", help="확인 없이 삭제"),
 ) -> None:
-    repo = WorkflowRepository()
+    repo = _workflow_repo()
     try:
         repo.load(name)
     except FileNotFoundError as exc:
@@ -333,7 +364,7 @@ def workflow_add_plan(
         help="워크플로우 자체 설명 (신규 또는 업데이트)",
     ),
 ) -> None:
-    repo = WorkflowRepository()
+    repo = _workflow_repo()
     created = False
     try:
         workflow = repo.load(name)
@@ -398,7 +429,7 @@ def workflow_add_execute(
 
     assert code is not None
 
-    repo = WorkflowRepository()
+    repo = _workflow_repo()
     created = False
     try:
         workflow = repo.load(name)
@@ -446,8 +477,8 @@ def workflow_run(
         resolve_path=True,
         help="실행 히스토리를 저장/불러올 JSON 파일",
     ),
-    history_limit: int = typer.Option(
-        50,
+    history_limit: Optional[int] = typer.Option(
+        None,
         "--history-limit",
         min=1,
         max=500,
@@ -494,7 +525,7 @@ def workflow_run(
         help="디버깅용 더미 LLM 사용",
     ),
 ) -> None:
-    repo = WorkflowRepository()
+    repo = _workflow_repo()
     try:
         workflow = repo.load(name)
     except FileNotFoundError as exc:
@@ -503,7 +534,7 @@ def workflow_run(
     if splash:
         console.print(render_splash(), style="bold cyan")
 
-    history = _load_history(history_file, history_limit)
+    history, resolved_history_path = _load_history(history_file, history_limit)
 
     planning_agent = PlanningAgent.from_env(
         provider_override=provider,
@@ -530,7 +561,7 @@ def workflow_run(
         kernel_name=kernel,
         timeout=timeout,
         suggest=suggest and debugging_agent is not None,
-        history_file=history_file,
+        history_file=history_file or resolved_history_path,
     )
 
     console.print(
@@ -570,6 +601,103 @@ def workflow_run(
         failed_idx = (run_result.failed_step_index or 0) + 1
         console.print(f"{failed_idx}번째 단계에서 실패했습니다.", style="bold red")
         raise typer.Exit(code=1)
+
+
+@config_app.command("show", short_help="현재 설정 확인")
+def config_show() -> None:
+    config = read_config()
+    agent = load_agent_settings()
+    runtime = load_runtime_settings()
+
+    table = Table(title="환경설정 파일", show_lines=False)
+    table.add_column("섹션", style="cyan")
+    table.add_column("키")
+    table.add_column("값")
+
+    for key, value in config.get("agent", {}).items():
+        table.add_row("agent", key, str(value))
+    for key, value in config.get("runtime", {}).items():
+        table.add_row("runtime", key, str(value))
+
+    if table.rows:
+        console.print(table)
+    else:
+        console.print("저장된 설정 파일이 없습니다.", style="yellow")
+
+    console.print("\n[bold]실행 중 적용된 값[/bold]", style="dim")
+    applied = Table(show_header=True)
+    applied.add_column("항목")
+    applied.add_column("값")
+    applied.add_row("agent.provider", agent.provider)
+    applied.add_row("agent.model", agent.model)
+    applied.add_row("agent.base_url", str(agent.base_url))
+    applied.add_row("agent.temperature", f"{agent.temperature}")
+    applied.add_row("agent.allow_fallback", str(agent.allow_fallback))
+    applied.add_row("runtime.history_limit", str(runtime.history_limit))
+    applied.add_row("runtime.default_history_file", str(runtime.default_history_file))
+    applied.add_row("runtime.workflows_dir", str(runtime.workflows_dir))
+    console.print(applied)
+
+
+@config_app.command("set-agent", short_help="에이전트 설정 업데이트")
+def config_set_agent(
+    provider: Optional[str] = typer.Option(None, help="LLM 제공자"),
+    model: Optional[str] = typer.Option(None, help="모델 이름"),
+    base_url: Optional[str] = typer.Option(None, help="LLM 엔드포인트"),
+    temperature: Optional[float] = typer.Option(None, help="Temperature"),
+    allow_fallback: Optional[bool] = typer.Option(None, help="실패 시 더미 사용 여부"),
+) -> None:
+    current = read_config().get("agent", {})
+    settings = AgentSettings(
+        provider=provider or str(current.get("provider", "ollama")),
+        model=model or str(current.get("model", "codegemma:7b")),
+        base_url=base_url if base_url is not None else current.get("base_url"),
+        temperature=float(
+            temperature if temperature is not None else current.get("temperature", 0.1)
+        ),
+        allow_fallback=bool(
+            allow_fallback if allow_fallback is not None else current.get("allow_fallback", True)
+        ),
+    )
+    update_agent_settings(settings)
+    console.print("에이전트 설정을 저장했습니다.", style="green")
+
+
+@config_app.command("set-runtime", short_help="런타임 설정 업데이트")
+def config_set_runtime(
+    history_limit: Optional[int] = typer.Option(None, help="기본 히스토리 보관 개수"),
+    history_file: Optional[str] = typer.Option(None, help="기본 히스토리 파일 경로"),
+    workflows_dir: Optional[str] = typer.Option(None, help="워크플로우 저장 디렉터리"),
+) -> None:
+    current = read_config().get("runtime", {})
+    settings = RuntimeSettings(
+        history_limit=int(
+            history_limit if history_limit is not None else current.get("history_limit", 50)
+        ),
+        default_history_file=(
+            history_file if history_file is not None else current.get("default_history_file")
+        ),
+        workflows_dir=(
+            workflows_dir if workflows_dir is not None else current.get("workflows_dir")
+        ),
+    )
+    update_runtime_settings(settings)
+    console.print("런타임 설정을 저장했습니다.", style="green")
+
+
+@config_app.command("reset", short_help="설정 파일 삭제")
+def config_reset(force: bool = typer.Option(False, "--force", help="확인 없이 삭제")) -> None:
+    path = get_config_path()
+    if not path.exists():
+        console.print("삭제할 설정 파일이 없습니다.", style="yellow")
+        return
+
+    if not force and not typer.confirm(f"{path} 파일을 삭제할까요?", default=False):
+        console.print("중단했습니다.", style="dim")
+        return
+
+    reset_config()
+    console.print("설정 파일을 삭제했습니다.", style="bold red")
 
 
 def _render_execution_result(result) -> None:

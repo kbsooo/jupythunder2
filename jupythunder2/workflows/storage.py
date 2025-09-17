@@ -9,11 +9,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
 
+from ..config import load_runtime_settings
 from .models import Workflow
 
 
 def _default_directory() -> Path:
-    base = os.getenv("JUPYTHUNDER2_WORKFLOWS_DIR")
+    runtime = load_runtime_settings()
+    base = runtime.workflows_dir or os.getenv("JUPYTHUNDER2_WORKFLOWS_DIR")
     if base:
         return Path(base).expanduser().resolve()
     return Path.home() / ".config" / "jupythunder2" / "workflows"

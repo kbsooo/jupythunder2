@@ -38,6 +38,11 @@ jupythunder2 execute --code "print(sum(range(10)))" --history-file history.json
 jupythunder2 workflow add-plan demo --goal "매출 데이터 분석" --context "CSV in ./data"
 jupythunder2 workflow add-exec demo --path scripts/load_data.py
 jupythunder2 workflow run demo --history-file history.json
+
+# 기본 설정 관리
+jupythunder2 config show
+jupythunder2 config set-agent --provider ollama --model codegemma:7b
+jupythunder2 config set-runtime --history-file ~/.cache/jupythunder2/history.json
 ```
 
 ## 환경 변수
@@ -49,6 +54,8 @@ jupythunder2 workflow run demo --history-file history.json
 | `JUPYTHUNDER2_BASE_URL` | Ollama와 호환되는 HTTP 엔드포인트 | 로컬 기본값 |
 | `JUPYTHUNDER2_TEMPERATURE` | LLM temperature 값 | `0.1` |
 | `JUPYTHUNDER2_ALLOW_FALLBACK` | 실패 시 더미 응답 사용 여부 (`true`/`false`) | `true` |
+| `JUPYTHUNDER2_HISTORY_FILE` | 기본 히스토리 파일 경로 | 설정 파일/없음 |
+| `JUPYTHUNDER2_HISTORY_LIMIT` | 히스토리 보관 기본 개수 | `50` |
 | `JUPYTHUNDER2_WORKFLOWS_DIR` | 워크플로우 JSON 저장 디렉터리 | `~/.config/jupythunder2/workflows` |
 
 ## 테스트

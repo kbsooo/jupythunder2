@@ -1,7 +1,7 @@
 [project]
 name = "dl-h1"
 version = "0.1.0"
-description = "Add your description here"
+description = "CLI-first Jupyter coding agent"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -12,10 +12,29 @@ dependencies = [
     "jupyter-client>=8.6.0",
     "ipykernel>=6.29.5",
 ]
+authors = [
+    { name = "Byungsoo Kang" }
+]
+license = { file = "LICENSE" }
+keywords = ["jupyter", "cli", "agent", "automation"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Code Generators",
+]
+
+[project.scripts]
+jupythunder2 = "jupythunder2.cli:run"
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.2",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:.*Jupyter is migrating its paths.*:DeprecationWarning",
 ]
 
 [build-system]

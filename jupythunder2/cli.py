@@ -83,8 +83,8 @@ def main(
     version: bool = typer.Option(
         False,
         "--version",
+        "-v",
         help="버전 정보를 출력하고 종료",
-        is_flag=True,
     ),
 ) -> None:
     """기본 콜백: 버전 옵션 처리 및 도움말 노출."""

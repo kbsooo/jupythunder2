@@ -77,6 +77,25 @@ def _workflow_repo() -> WorkflowRepository:
     return WorkflowRepository()
 
 
+def _split_script_cells(content: str) -> list[str]:
+    cells: list[str] = []
+    buffer: list[str] = []
+    for line in content.splitlines():
+        if line.strip().startswith("# %%"):
+            if buffer:
+                cell = "\n".join(buffer).strip()
+                if cell:
+                    cells.append(cell)
+            buffer = []
+            continue
+        buffer.append(line)
+    if buffer:
+        cell = "\n".join(buffer).strip()
+        if cell:
+            cells.append(cell)
+    return cells
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -275,6 +294,152 @@ def execute_cell(
             _render_debug_suggestion(suggestion)
         raise typer.Exit(code=1)
 
+
+@app.command(name="session", short_help="여러 코드 셀을 순차 실행")
+def run_session(
+    script: Optional[Path] = typer.Option(
+        None,
+        "--script",
+        "-s",
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="# %% 구분자를 사용한 스크립트 파일",
+    ),
+    kernel: str = typer.Option("python3", "--kernel", help="사용할 커널 이름"),
+    timeout: float = typer.Option(
+        30.0,
+        "--timeout",
+        min=1.0,
+        max=300.0,
+        help="커널 응답 대기 시간(초)",
+    ),
+    history_file: Optional[Path] = typer.Option(
+        None,
+        "--history-file",
+        "-f",
+        file_okay=True,
+        dir_okay=False,
+        resolve_path=True,
+        help="실행 히스토리를 저장/불러올 JSON 파일",
+    ),
+    history_limit: Optional[int] = typer.Option(
+        None,
+        "--history-limit",
+        min=1,
+        max=500,
+        help="히스토리에 보관할 최대 셀 개수",
+    ),
+    splash: bool = typer.Option(
+        False,
+        "--splash/--no-splash",
+        help="ASCII 아트를 출력할지 여부",
+    ),
+    suggest: bool = typer.Option(
+        True,
+        "--suggest/--no-suggest",
+        help="오류 발생 시 디버깅 제안을 사용할지 여부",
+    ),
+    debug_provider: Optional[str] = typer.Option(
+        None,
+        "--debug-provider",
+        help="디버깅 LLM 제공자",
+    ),
+    debug_model: Optional[str] = typer.Option(
+        None,
+        "--debug-model",
+        help="디버깅 LLM 모델",
+    ),
+    debug_dummy: bool = typer.Option(
+        False,
+        "--debug-dummy",
+        help="디버깅용 더미 LLM 사용",
+    ),
+) -> None:
+    history, resolved_history_path = _load_history(history_file, history_limit)
+
+    if splash:
+        console.print(render_splash(), style="bold cyan")
+
+    debugging_agent = None
+    if suggest:
+        debugging_agent = DebuggingAgent.from_env(
+            provider_override=debug_provider,
+            model_override=debug_model,
+            use_dummy=True if debug_dummy else None,
+        )
+
+    target_path = history_file or resolved_history_path
+
+    def handle_execution(code: str, session: KernelSession) -> None:
+        execution = session.execute(code, timeout=timeout)
+        _render_code_panel(code)
+        _render_execution_result(execution)
+
+        executed_cell = build_executed_cell(code, execution)
+        history.add(executed_cell)
+        if target_path is not None:
+            history.save(target_path)
+
+        if not execution.succeeded and debugging_agent:
+            suggestion = debugging_agent.suggest_fix(
+                failing_code=code,
+                error_name=execution.error.name if execution.error else "UnknownError",
+                error_value=execution.error.value if execution.error else "",
+                traceback=execution.error.traceback if execution.error else [],
+                history=history,
+            )
+            _render_debug_suggestion(suggestion)
+            raise typer.Exit(code=1)
+
+        if not execution.succeeded:
+            raise typer.Exit(code=1)
+
+    with KernelSession(kernel_name=kernel) as session:
+        if script is not None:
+            cells = _split_script_cells(script.read_text())
+            if not cells:
+                console.print("실행할 코드 셀을 찾지 못했습니다.", style="yellow")
+                return
+            for cell in cells:
+                handle_execution(cell, session)
+            console.print("스크립트 실행을 완료했습니다.", style="bold green")
+            return
+
+        console.print(
+            "한 줄 이상 입력 후 빈 줄을 입력하면 실행됩니다. ':exit' 또는 Ctrl-D로 종료.",
+            style="dim",
+        )
+        cell_lines: list[str] = []
+        prompt_index = 1
+        while True:
+            prompt = f"In [{prompt_index}]: " if not cell_lines else "...: "
+            try:
+                line = input(prompt)
+            except EOFError:
+                console.print("\n세션을 종료합니다.", style="dim")
+                break
+
+            if not cell_lines and line.strip() in {":exit", ":quit", ":q"}:
+                console.print("세션을 종료합니다.", style="dim")
+                break
+
+            if line == "" and not cell_lines:
+                continue
+
+            if line == "" and cell_lines:
+                code = "\n".join(cell_lines)
+                cell_lines = []
+                handle_execution(code, session)
+                prompt_index += 1
+                continue
+
+            cell_lines.append(line)
+
+        if cell_lines:
+            code = "\n".join(cell_lines)
+            handle_execution(code, session)
 
 @workflow_app.command("list", short_help="저장된 워크플로우 나열")
 def workflow_list() -> None:

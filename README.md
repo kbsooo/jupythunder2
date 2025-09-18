@@ -41,6 +41,9 @@ jupythunder2 workflow move-step demo --from 2 --to 1
 jupythunder2 workflow remove-step demo --index 3
 jupythunder2 workflow run demo --history-file history.json
 
+# %% 구분자를 활용한 세션 실행
+jupythunder2 session --script notebooks/example.py --history-file history.json --no-suggest
+
 # 기본 설정 관리
 jupythunder2 config show
 jupythunder2 config set-agent --provider ollama --model codegemma:7b

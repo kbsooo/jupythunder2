@@ -37,6 +37,8 @@ jupythunder2 execute --code "print(sum(range(10)))" --history-file history.json
 
 jupythunder2 workflow add-plan demo --goal "매출 데이터 분석" --context "CSV in ./data"
 jupythunder2 workflow add-exec demo --path scripts/load_data.py
+jupythunder2 workflow move-step demo --from 2 --to 1
+jupythunder2 workflow remove-step demo --index 3
 jupythunder2 workflow run demo --history-file history.json
 
 # 기본 설정 관리

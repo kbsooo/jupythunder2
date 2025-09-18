@@ -351,6 +351,57 @@ def workflow_delete(
     console.print(f"워크플로우 '{name}'을(를) 삭제했습니다.", style="bold red")
 
 
+@workflow_app.command("remove-step", short_help="단계 삭제")
+def workflow_remove_step(
+    name: str,
+    index: int = typer.Option(..., "--index", "-i", min=1, help="삭제할 단계 (1부터)"),
+) -> None:
+    repo = _workflow_repo()
+    try:
+        workflow = repo.load(name)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"워크플로우 '{name}'을(를) 찾을 수 없습니다.") from exc
+
+    try:
+        removed = workflow.remove_step(index - 1)
+    except IndexError as exc:
+        raise typer.BadParameter("단계 인덱스가 범위를 벗어났습니다.") from exc
+
+    repo.save(workflow)
+    console.print(
+        f"'{removed.name}' 단계를 삭제했습니다. (남은 단계: {len(workflow.steps)})",
+        style="bold yellow",
+    )
+
+
+@workflow_app.command("move-step", short_help="단계 순서 변경")
+def workflow_move_step(
+    name: str,
+    from_index: int = typer.Option(..., "--from", min=1, help="현재 위치 (1부터)"),
+    to_index: int = typer.Option(..., "--to", min=1, help="이동할 위치 (1부터)"),
+) -> None:
+    repo = _workflow_repo()
+    try:
+        workflow = repo.load(name)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(f"워크플로우 '{name}'을(를) 찾을 수 없습니다.") from exc
+
+    if not workflow.steps:
+        console.print("이동할 단계가 없습니다.", style="yellow")
+        return
+
+    try:
+        workflow.move_step(from_index - 1, to_index - 1)
+    except IndexError as exc:
+        raise typer.BadParameter("단계 인덱스가 범위를 벗어났습니다.") from exc
+
+    repo.save(workflow)
+    console.print(
+        f"단계 {from_index} → {to_index} 순서 변경 완료 (총 {len(workflow.steps)}단계)",
+        style="green",
+    )
+
+
 @workflow_app.command("add-plan", short_help="plan 단계 추가")
 def workflow_add_plan(
     name: str,

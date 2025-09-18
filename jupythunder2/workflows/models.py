@@ -68,6 +68,21 @@ class Workflow:
         step.validate()
         self.steps.append(step)
 
+    def remove_step(self, index: int) -> WorkflowStep:
+        if not 0 <= index < len(self.steps):
+            raise IndexError("삭제할 단계 인덱스가 범위를 벗어났습니다.")
+        return self.steps.pop(index)
+
+    def move_step(self, old_index: int, new_index: int) -> None:
+        if not 0 <= old_index < len(self.steps):
+            raise IndexError("이동할 원본 인덱스가 범위를 벗어났습니다.")
+        if not 0 <= new_index < len(self.steps):
+            raise IndexError("이동할 대상 인덱스가 범위를 벗어났습니다.")
+        if old_index == new_index:
+            return
+        step = self.steps.pop(old_index)
+        self.steps.insert(new_index, step)
+
     def to_dict(self) -> dict:
         return {
             "name": self.name,

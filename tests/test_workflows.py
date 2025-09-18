@@ -91,3 +91,22 @@ def test_workflow_runner_stops_after_failure(tmp_path: Path):
     assert not result.success
     assert len(result.outcomes) == 1
     assert history.recent()[-1].error_name == "ZeroDivisionError"
+
+
+def test_workflow_modification_commands(tmp_path):
+    repo = WorkflowRepository(directory=tmp_path)
+    workflow = Workflow(name="demo")
+    workflow.add_step(WorkflowStep(step_type="plan", goal="a", name="1"))
+    workflow.add_step(WorkflowStep(step_type="execute", code="print('2')", name="2"))
+    workflow.add_step(WorkflowStep(step_type="execute", code="print('3')", name="3"))
+    repo.save(workflow)
+
+    loaded = repo.load("demo")
+    loaded.move_step(0, 2)
+    repo.save(loaded)
+    assert [step.name for step in repo.load("demo").steps] == ["2", "3", "1"]
+
+    removed = loaded.remove_step(1)
+    assert removed.name == "3"
+    repo.save(loaded)
+    assert [step.name for step in repo.load("demo").steps] == ["2", "1"]

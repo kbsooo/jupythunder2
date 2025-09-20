@@ -4,10 +4,12 @@ CLI 환경에서 계획 · 코드 생성 · 실행 · 디버깅까지 하나의 
 
 ## 주요 기능 (MVP)
 - ASCII 스플래시를 포함한 전용 REPL UI (`prompt_toolkit` + `rich`)
-- `/auto`, `/exec`, `/reset` 등 명령어 기반 워크플로우 제어
+- `/auto`, `/exec`, `/reset` 등 명령어 기반 워크플로우 제어 (기본 자동 실행 ON)
 - Jupyter 커널과 직접 통신하여 코드 셀 실행 및 결과/이미지 수집
 - 실행 오류에 대한 휴리스틱 디버그 요약과 수정 힌트
-- 세션 로그(`runs/<timestamp>/events.jsonl`) 및 아티팩트 저장
+- 세션 로그(`runs/<timestamp>/events.jsonl`) 및 아티팩트 저장, `codes/<mmddhhmm>.ipynb|.md`로 코드/설명을 기록
+- 세션 시작 시 기존 코드북 선택 또는 새 코드북 생성(한 줄 요약 표시)
+- 커널/에이전트 대기 동안 ASCII 애니메이션 상태 표시, 모듈 누락 시 설치 여부 안내
 - Ollama(codegemma:7b) 연동을 위한 LLM 오케스트레이터 골격
 
 ## 빠른 시작
@@ -36,13 +38,21 @@ jt2
 
 ```toml
 model = "codegemma:7b"
-auto_execute = false
+use_color = false
+auto_execute = true
+kernel_name = "python3"
+codebook_root = "codes"
 run_root = "runs"
 max_execution_seconds = 60
 history_limit = 10
 ```
 
 `jt2 --config /path/to/config.toml` 형태로 다른 설정 파일을 지정할 수도 있습니다. `--dry-run` 옵션을 사용하면 설정만 출력하고 REPL에 진입하지 않습니다.
+
+- 컬러 출력을 활성화하고 싶다면 설정에서 `use_color = true`로 바꾸거나 실행 시 `jt2 --color`를 사용하세요. `jt2 --no-color`로 일시적으로 끌 수도 있습니다.
+- 커널이 발견되지 않는다면 `ipykernel` 설치 후 `kernel_name`을 해당 커널 이름으로 맞추거나 `python -m ipykernel install --user --name python3` 명령으로 기본 커널을 등록하세요.
+- 각 세션은 `codes/<mmddhhmm>.ipynb`와 `codes/<mmddhhmm>.md` 한 쌍으로 기록됩니다. 노트북에는 실행된 코드와 출력이 저장되고, Markdown에는 사용자 요청·에이전트 계획·실행 결과 요약이 누적됩니다.
+- 오류가 `ModuleNotFoundError`인 경우에는 `uv pip install <모듈>` 실행 여부를 묻고, 설치가 성공하면 즉시 재사용할 수 있습니다.
 
 ## 개발 노트
 - 패키지 버전: Python 3.12

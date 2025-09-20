@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from jupyter_client import KernelManager
 from jupyter_client.blocking import BlockingKernelClient
+from jupyter_client.kernelspec import NoSuchKernel
 
 
 @dataclass
@@ -51,7 +53,16 @@ class KernelRunner:
     def start(self) -> None:
         if self._client is not None:
             return
-        self._manager.start_kernel()
+        try:
+            self._manager.start_kernel()
+        except NoSuchKernel:
+            fallback_cmd = self._default_kernel_cmd()
+            try:
+                self._manager.start_kernel(kernel_cmd=fallback_cmd)
+            except Exception as exc:  # pragma: no cover - depends on env setup
+                raise RuntimeError(
+                    "Python 커널을 시작할 수 없습니다. ipykernel 패키지가 설치되어 있고 `python -m ipykernel install --user`가 실행되었는지 확인하세요."
+                ) from exc
         client = self._manager.blocking_client()
         client.start_channels()
         self._client = client
@@ -125,6 +136,9 @@ class KernelRunner:
         with image_path.open("wb") as fh:
             fh.write(image_bytes)
         return image_path
+
+    def _default_kernel_cmd(self) -> List[str]:
+        return [sys.executable, "-m", "ipykernel_launcher", "-f", "{connection_file}"]
 
 
 __all__ = ["KernelRunner", "ExecutionResult", "ExecutionError"]

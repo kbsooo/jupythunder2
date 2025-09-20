@@ -1,10 +1,12 @@
 """Interactive REPL loop for jupythunder2."""
 from __future__ import annotations
 
+import re
 import shlex
+import subprocess
 import uuid
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional, Set
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -13,12 +15,15 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
 
 from ..agent.orchestrator import AgentOrchestrator, AgentResponse, CodeCell
 from ..config import JT2Settings
 from ..debug.diagnostics import Debugger
-from ..runtime.kernel import ExecutionResult, KernelRunner
+from ..runtime.kernel import ExecutionError, ExecutionResult, KernelRunner
+from ..store.codebook import CodebookLogger
 from ..store.session import SessionStore
+from .animation import AsciiAnimator
 
 
 @dataclass
@@ -30,32 +35,36 @@ class PendingCell:
 class JT2Repl:
     """High-level orchestration for interactive jt2 sessions."""
 
-    def __init__(self, settings: JT2Settings) -> None:
+    def __init__(self, settings: JT2Settings, codebook: CodebookLogger, console: Optional[Console] = None) -> None:
         self.settings = settings
-        self.console = Console()
+        self.console = console or Console(no_color=not settings.use_color, highlight=settings.use_color)
         self.session = PromptSession(history=InMemoryHistory(), auto_suggest=AutoSuggestFromHistory())
         self.store = SessionStore(settings.run_root)
         self.session_dir = self.store.start_session()
-        self.kernel = KernelRunner()
+        self.kernel = KernelRunner(kernel_name=settings.kernel_name)
         self.debugger = Debugger()
         self.orchestrator = AgentOrchestrator(settings=settings)
         self.pending_cells: Dict[str, PendingCell] = {}
         self.history: List[dict[str, str]] = []
         self.auto_execute = settings.auto_execute
         self.running = True
+        self.codebook = codebook
+        self._animation = AsciiAnimator(self.console)
+        self._install_prompts: Set[str] = set()
 
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
     def run(self) -> None:
         """Start the interactive prompt loop."""
-        self.console.print("[bold green]인터랙티브 세션을 시작합니다. `/help` 로 명령어를 확인하세요.[/]")
+        self.console.print(f"코드북: {self.codebook.stem} · {self.codebook.summary}")
+        self.console.print("인터랙티브 세션을 시작합니다. `/help` 로 명령어를 확인하세요.")
         with patch_stdout():
             while self.running:
                 try:
                     user_input = self.session.prompt("jt2> ")
                 except EOFError:
-                    self.console.print("\n[bold yellow]EOF 감지, 세션을 종료합니다.[/]")
+                    self.console.print("\nEOF 감지, 세션을 종료합니다.")
                     break
 
                 stripped = user_input.strip()
@@ -80,27 +89,60 @@ class JT2Repl:
     def _handle_user_message(self, message: str) -> None:
         self.history.append({"role": "user", "content": message})
         self.store.append_event("user", {"message": message})
+        self.codebook.log_user(message)
 
-        response = self.orchestrator.respond(message=message, history=self.history)
+        self._animation.start("에이전트가 계획을 작성 중...")
+        try:
+            response = self.orchestrator.respond(message=message, history=self.history)
+        finally:
+            self._animation.stop()
         self._render_agent_response(response)
         self.history.append({"role": "assistant", "content": response.message})
         self.store.append_event("assistant", response.to_dict())
+        self.codebook.log_agent_response(response)
 
         if response.code_cells:
+            new_cell_ids: List[str] = []
             for cell in response.code_cells:
                 cell_id = cell.id or self._make_cell_id(prefix="agent")
                 if not cell.id:
                     cell.id = cell_id
                 tracked = PendingCell(cell=cell, origin="agent")
                 self.pending_cells[cell_id] = tracked
-                self.console.print(Panel(cell.code, title=f"pending {cell_id}", subtitle=cell.description or "", highlight=True))
-            if self.auto_execute:
-                self._execute_cells(list(self.pending_cells.keys()))
+                new_cell_ids.append(cell_id)
+                self._render_pending_cell(cell_id, tracked)
+                self.codebook.register_code_cell(
+                    cell_id,
+                    cell.code,
+                    description=cell.description,
+                    origin=tracked.origin,
+                )
+
+            if self.auto_execute and new_cell_ids:
+                self.console.print(f"{len(new_cell_ids)}개의 셀을 자동 실행합니다.")
+                self._execute_cells(new_cell_ids)
+            elif new_cell_ids:
+                self.console.print("새 코드 셀을 실행하려면 `/exec all` 또는 `/exec <셀ID>`를 입력하세요.")
 
     def _render_agent_response(self, response: AgentResponse) -> None:
-        self.console.print(Panel(Markdown(response.message), title="에이전트"))
-        if response.plan:
-            self.console.print(Panel(Markdown(response.plan), title="계획"))
+        try:
+            body = Markdown(response.message)
+        except Exception:
+            body = response.message
+        self.console.print(Panel(body, title="에이전트"))
+
+        if response.plan_items:
+            plan_text = "\n".join(f"- {item}" for item in response.plan_items)
+            self.console.print(Panel(Markdown(plan_text), title="계획"))
+
+    def _render_pending_cell(self, cell_id: str, tracked: PendingCell) -> None:
+        language = tracked.cell.language or "python"
+        try:
+            syntax = Syntax(tracked.cell.code, language, theme="monokai", line_numbers=False, word_wrap=True)
+        except Exception:
+            syntax = Syntax(tracked.cell.code, "python", theme="monokai", line_numbers=False, word_wrap=True)
+        subtitle = tracked.cell.description or None
+        self.console.print(Panel(syntax, title=f"대기 {cell_id}", subtitle=subtitle))
 
     # ------------------------------------------------------------------
     # commands
@@ -112,7 +154,7 @@ class JT2Repl:
         command, *rest = parts
 
         if command in {"quit", "exit"}:
-            self.console.print("[bold magenta]세션을 종료합니다.[/]")
+            self.console.print("세션을 종료합니다.")
             self.running = False
             return False
         if command == "help":
@@ -134,7 +176,7 @@ class JT2Repl:
             self._command_code(rest)
             return True
 
-        self.console.print(f"[bold red]알 수 없는 명령어:[/] {command}")
+        self.console.print(f"알 수 없는 명령어: {command}")
         return True
 
     def _command_help(self) -> None:
@@ -158,19 +200,19 @@ class JT2Repl:
     def _command_auto(self, value: str) -> None:
         normalized = value.lower()
         if normalized not in {"on", "off"}:
-            self.console.print("[bold red]/auto 는 on 또는 off 중 하나를 필요로 합니다.[/]")
+            self.console.print("/auto 는 on 또는 off 중 하나를 필요로 합니다.")
             return
         self.auto_execute = normalized == "on"
         self.console.print(f"자동 실행 모드가 {'ON' if self.auto_execute else 'OFF'} 로 설정되었습니다.")
 
     def _command_reset(self) -> None:
-        self.console.print("[yellow]커널을 재시작합니다...[/]")
+        self.console.print("커널을 재시작합니다...")
         self.kernel.restart()
         self.store.append_event("system", {"action": "reset_kernel"})
 
     def _command_cells(self) -> None:
         if not self.pending_cells:
-            self.console.print("[dim]대기 중인 코드 셀이 없습니다.[/]")
+            self.console.print("대기 중인 코드 셀이 없습니다.")
             return
         lines = []
         for cell_id, tracked in self.pending_cells.items():
@@ -188,14 +230,19 @@ class JT2Repl:
 
     def _command_code(self, parts: List[str]) -> None:
         if not parts:
-            self.console.print("[bold red]/code 명령은 파이썬 코드를 인라인으로 입력해야 합니다.[/]")
+            self.console.print("/code 명령은 파이썬 코드를 인라인으로 입력해야 합니다.")
             return
         code = " ".join(parts)
         cell_id = self._make_cell_id(prefix="manual")
         cell = CodeCell(id=cell_id, description="manual input", language="python", code=code)
         tracked = PendingCell(cell=cell, origin="user")
         self.pending_cells[cell_id] = tracked
-        self.console.print(Panel(code, title=f"pending {cell_id}", subtitle="manual input"))
+        try:
+            syntax = Syntax(code, "python", theme="monokai", line_numbers=False, word_wrap=True)
+        except Exception:
+            syntax = code
+        self.console.print(Panel(syntax, title=f"대기 {cell_id}", subtitle="manual input"))
+        self.codebook.register_code_cell(cell_id, code, description="manual input", origin="user")
         if self.auto_execute:
             self._execute_cells([cell_id])
 
@@ -206,17 +253,21 @@ class JT2Repl:
         for cell_id in cell_ids:
             tracked = self.pending_cells.pop(cell_id, None)
             if not tracked:
-                self.console.print(f"[bold red]셀을 찾을 수 없습니다:[/] {cell_id}")
+                self.console.print(f"셀을 찾을 수 없습니다: {cell_id}")
                 continue
             self._execute_cell(cell_id, tracked)
 
     def _execute_cell(self, cell_id: str, tracked: PendingCell) -> None:
-        self.console.print(f"[cyan]실행 중...[/] {cell_id}")
-        result = self.kernel.execute(
-            code=tracked.cell.code,
-            timeout=self.settings.max_execution_seconds,
-            artifact_dir=self.session_dir,
-        )
+        self.console.print(f"실행 중... {cell_id}")
+        self._animation.start("커널에서 코드를 실행 중...")
+        try:
+            result = self.kernel.execute(
+                code=tracked.cell.code,
+                timeout=self.settings.max_execution_seconds,
+                artifact_dir=self.session_dir,
+            )
+        finally:
+            self._animation.stop()
         self.store.append_event(
             "execution",
             {
@@ -226,36 +277,70 @@ class JT2Repl:
                 "result": result.to_dict(),
             },
         )
-        self._render_execution_result(result)
+        self._render_execution_result(cell_id, result)
+        self.codebook.record_execution(cell_id, result)
 
-    def _render_execution_result(self, result: ExecutionResult) -> None:
+    def _render_execution_result(self, cell_id: str, result: ExecutionResult) -> None:
         blocks = []
         if result.stdout:
-            blocks.append(Panel(result.stdout, title="stdout"))
+            blocks.append(Panel(result.stdout, title=f"{cell_id} · stdout"))
         if result.stderr:
-            blocks.append(Panel(result.stderr, title="stderr", style="red"))
+            blocks.append(Panel(result.stderr, title=f"{cell_id} · stderr"))
         if result.result_text:
-            blocks.append(Panel(result.result_text, title="result"))
+            blocks.append(Panel(result.result_text, title=f"{cell_id} · result"))
         for image_path in result.images:
-            blocks.append(Panel(str(image_path), title="image"))
+            blocks.append(Panel(str(image_path), title=f"{cell_id} · image"))
         if result.error is not None:
             summary = self.debugger.summarize(result.error)
             panel_text = summary.explanation
             if summary.suggestion:
                 panel_text += f"\n\n제안: {summary.suggestion}"
-            blocks.append(Panel(Markdown(panel_text), title="디버그", style="yellow"))
+            try:
+                body = Markdown(panel_text)
+            except Exception:
+                body = panel_text
+            blocks.append(Panel(body, title=f"{cell_id} · 디버그"))
 
         if not blocks:
-            blocks.append(Panel("(no output)", title="결과"))
+            blocks.append(Panel("(no output)", title=f"{cell_id} · 결과"))
 
         for block in blocks:
             self.console.print(block)
+
+        if result.error is not None:
+            self._maybe_offer_install(result.error)
 
     # ------------------------------------------------------------------
     # utils
     # ------------------------------------------------------------------
     def _make_cell_id(self, prefix: str) -> str:
         return f"{prefix}-{uuid.uuid4().hex[:6]}"
+
+    def _maybe_offer_install(self, error: ExecutionError) -> None:
+        if error.ename not in {"ModuleNotFoundError", "ImportError"}:
+            return
+        module = self._extract_missing_module(error.evalue)
+        if not module or module in self._install_prompts:
+            return
+        answer = self.console.input(f"모듈 '{module}'을 설치할까요? [y/N]: ").strip().lower()
+        if answer not in {"y", "yes"}:
+            self._install_prompts.add(module)
+            return
+        self._install_prompts.add(module)
+        self.console.print(f"`uv pip install {module}` 실행 중...")
+        try:
+            subprocess.run(["uv", "pip", "install", module], check=True)
+            self.console.print(f"설치 완료: {module}")
+        except subprocess.CalledProcessError as exc:
+            self.console.print(f"설치 실패: {exc}")
+        except FileNotFoundError:
+            self.console.print("`uv` 명령을 찾을 수 없습니다. 수동으로 패키지를 설치해주세요.")
+
+    def _extract_missing_module(self, message: str) -> Optional[str]:
+        match = re.search(r"named ['\"]([^'\"]+)['\"]", message)
+        if match:
+            return match.group(1)
+        return None
 
 
 __all__ = ["JT2Repl"]

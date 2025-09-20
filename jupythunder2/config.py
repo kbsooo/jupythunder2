@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 DEFAULT_CONFIG_FILES = [
     Path.cwd() / ".jt2.toml",
@@ -14,8 +14,12 @@ DEFAULT_CONFIG_FILES = [
 
 
 class JT2Settings(BaseModel):
+    model_config = ConfigDict(json_encoders={Path: str})
     model: str = Field(default="codegemma:7b", description="기본 LLM 모델 이름")
-    auto_execute: bool = Field(default=False, description="코드 셀 자동 실행 여부")
+    use_color: bool = Field(default=False, description="Rich 컬러/스타일 사용 여부")
+    auto_execute: bool = Field(default=True, description="코드 셀 자동 실행 여부")
+    kernel_name: str = Field(default="python3", description="사용할 Jupyter 커널 이름")
+    codebook_root: Path = Field(default_factory=lambda: Path("codes"), description="노트북/요약 저장 경로")
     run_root: Path = Field(default_factory=lambda: Path("runs"), description="세션 아티팩트 저장 경로")
     max_execution_seconds: float = Field(default=60.0, gt=0, description="코드 셀 실행 타임아웃(초)")
     history_limit: int = Field(default=10, ge=1, description="대화 히스토리 전송 최대 개수")
@@ -23,12 +27,15 @@ class JT2Settings(BaseModel):
     @model_validator(mode="after")
     def _normalize_paths(self) -> "JT2Settings":
         self.run_root = self.run_root.expanduser()
+        self.codebook_root = self.codebook_root.expanduser()
         return self
 
     def to_dict(self) -> Dict[str, Any]:
         data = self.model_dump()
         data["run_root"] = str(self.run_root)
+        data["codebook_root"] = str(self.codebook_root)
         return data
+
 
 
 def _load_toml(path: Path) -> Dict[str, Any]:

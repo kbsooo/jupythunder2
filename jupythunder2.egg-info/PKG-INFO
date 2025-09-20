@@ -1,3 +1,18 @@
+Metadata-Version: 2.4
+Name: jupythunder2
+Version: 0.1.0
+Summary: CLI-native agentic notebook coding companion.
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: typer>=0.12.3
+Requires-Dist: prompt-toolkit>=3.0.43
+Requires-Dist: rich>=13.7.0
+Requires-Dist: jupyter-client>=8.6.0
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: ollama>=0.1.8
+Dynamic: license-file
+
 # jupythunder2
 
 CLI 환경에서 계획 · 코드 생성 · 실행 · 디버깅까지 하나의 흐름으로 이어주는 노트북 에이전트입니다. Codex CLI, Gemini CLI처럼 단일 명령(`jt2`)으로 실행하면 전용 REPL이 뜨고, 자연어 요청과 코드 실행을 반복할 수 있습니다.

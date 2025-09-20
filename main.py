@@ -1,6 +1,6 @@
-def main():
-    print("Hello from dl-h1!")
+"""Legacy entrypoint delegating to the jt2 CLI."""
+from jupythunder2.cli import entrypoint
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":  # pragma: no cover
+    entrypoint()

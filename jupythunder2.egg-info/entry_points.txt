@@ -1,0 +1,2 @@
+[console_scripts]
+jt2 = jupythunder2.cli:entrypoint

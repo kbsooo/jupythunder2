@@ -2,6 +2,9 @@
 
 CLI 환경에서 계획 · 코드 생성 · 실행 · 디버깅까지 하나의 흐름으로 이어주는 노트북 에이전트입니다. Codex CLI, Gemini CLI처럼 단일 명령(`jt2`)으로 실행하면 전용 REPL이 뜨고, 자연어 요청과 코드 실행을 반복할 수 있습니다.
 
+## Demo video
+![영상](https://github.com/user-attachments/assets/adda3abd-174c-4992-a1ee-d24d67610701)
+
 ## 주요 기능 (MVP)
 - ASCII 스플래시를 포함한 전용 REPL UI (`prompt_toolkit` + `rich`)
 - `/auto`, `/exec`, `/reset` 등 명령어 기반 워크플로우 제어 (기본 자동 실행 ON)

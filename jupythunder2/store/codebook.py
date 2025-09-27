@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -109,6 +110,12 @@ class CodebookLogger:
             section.append("")
         self._append_markdown(section)
 
+    def log_system_message(self, title: str, body: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        message = body.strip()
+        section = [f"### {timestamp} · 시스템 · {title}", "", message, ""]
+        self._append_markdown(section)
+
     # ------------------------------------------------------------------
     def register_code_cell(
         self,
@@ -155,6 +162,17 @@ class CodebookLogger:
             section.extend([f"> {result.result_text.strip()}", ""])
         if result.error is not None:
             section.extend([f"⚠️ 오류: {result.error.ename}: {result.error.evalue}", ""])
+            if result.error.traceback:
+                excerpt = "\n".join(result.error.traceback[:20]).strip()
+                if excerpt:
+                    section.extend(["```text", excerpt, "```", ""])
+        if result.images:
+            section.append("#### 이미지")
+            section.append("")
+            for idx, image_path in enumerate(result.images, start=1):
+                reference = self._relative_image_path(image_path)
+                section.append(f"![{cell_id} · 이미지 {idx}]({reference})")
+            section.append("")
         self._append_markdown(section)
 
     # ------------------------------------------------------------------
@@ -210,6 +228,14 @@ class CodebookLogger:
             )
         if result.error is not None:
             yield self._error_output(result.error)
+
+    def _relative_image_path(self, path: Path) -> str:
+        base = self.markdown_path.parent
+        try:
+            rel = os.path.relpath(path, base)
+        except ValueError:
+            rel = str(path)
+        return Path(rel).as_posix()
 
     def _error_output(self, error: ExecutionError) -> NotebookNode:
         return nbf.new_output(

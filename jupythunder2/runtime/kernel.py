@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import sys
 import uuid
+from queue import Empty
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -90,7 +91,19 @@ class KernelRunner:
         result = ExecutionResult()
 
         while True:
-            msg = self._client.get_iopub_msg(timeout=timeout)
+            try:
+                msg = self._client.get_iopub_msg(timeout=timeout)
+            except Empty:
+                result.stderr += "커널 응답이 지연되고 있습니다. `/reset`으로 커널을 재시작하세요.\n"
+                result.error = ExecutionError(
+                    ename="TimeoutError",
+                    evalue=f"{timeout:.1f}초 안에 커널 응답이 도착하지 않았습니다.",
+                    traceback=[
+                        "KernelRunner: timed out waiting for IOPub messages.",
+                        "필요 시 `/reset` 명령으로 커널을 재시작하세요.",
+                    ],
+                )
+                break
             if msg.get("parent_header", {}).get("msg_id") != msg_id:
                 continue
 
@@ -124,7 +137,7 @@ class KernelRunner:
         # Drain the shell channel to keep the client in sync.
         try:
             self._client.get_shell_msg(timeout=timeout)
-        except Exception:  # pragma: no cover - best effort cleanup
+        except (Empty, Exception):  # pragma: no cover - best effort cleanup
             pass
 
         return result

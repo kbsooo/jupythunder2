@@ -169,7 +169,11 @@ class AgentOrchestrator:
 
     def _maybe_create_llm(self, settings: JT2Settings) -> Optional[LLMProvider]:
         try:
-            return LLMProvider(model=settings.model)
+            return LLMProvider(
+                model=settings.model,
+                host=settings.llm_host,
+                request_timeout=settings.llm_request_timeout,
+            )
         except LLMProviderError:
             return None
 

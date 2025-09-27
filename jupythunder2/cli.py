@@ -100,7 +100,8 @@ def _root(
     if ctx.invoked_subcommand is not None:
         return
 
-    settings = load_config(config_path)
+    load_result = load_config(config_path)
+    settings = load_result.settings
     updates: dict[str, object] = {}
     if auto is not None:
         updates["auto_execute"] = auto
@@ -110,6 +111,14 @@ def _root(
         settings = settings.model_copy(update=updates)
 
     console = _create_console(settings.use_color)
+
+    if load_result.source is not None:
+        console.print(f"설정 파일 로드: {load_result.source}")
+    else:
+        console.print("설정 파일을 찾지 못했습니다. 기본값을 사용합니다.")
+        searched = [str(path) for path in load_result.searched]
+        if searched:
+            console.print("검색 경로: " + ", ".join(searched))
 
     try:
         if dry_run:

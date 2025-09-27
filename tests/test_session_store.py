@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from jupythunder2.store.session import SessionStore
@@ -16,3 +17,8 @@ def test_session_store_creates_directory(tmp_path: Path) -> None:
     assert len(events) == 1
 
     store.finish_session()
+    metadata_path = session_dir / "session.json"
+    assert metadata_path.exists()
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["status"] == "completed"
+    assert metadata["event_count"] == 1

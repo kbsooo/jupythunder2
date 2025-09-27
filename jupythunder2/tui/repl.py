@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
 import subprocess
+import traceback
 import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
@@ -94,6 +96,23 @@ class JT2Repl:
         self._animation.start("에이전트가 계획을 작성 중...")
         try:
             response = self.orchestrator.respond(message=message, history=self.history)
+        except Exception as exc:
+            tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+            excerpt = "".join(tb_lines).strip()
+            self.store.append_event(
+                "error",
+                {
+                    "phase": "agent",
+                    "message": str(exc),
+                    "traceback": tb_lines,
+                },
+            )
+            self.console.print(Panel(f"에이전트 처리 중 오류가 발생했습니다: {exc}", title="오류", style="red"))
+            if excerpt:
+                self.codebook.log_system_message("에이전트 오류", f"{exc}\n\n```text\n{excerpt}\n```")
+            else:
+                self.codebook.log_system_message("에이전트 오류", str(exc))
+            return
         finally:
             self._animation.stop()
         self._render_agent_response(response)
@@ -266,6 +285,24 @@ class JT2Repl:
                 timeout=self.settings.max_execution_seconds,
                 artifact_dir=self.session_dir,
             )
+        except Exception as exc:
+            tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+            self.store.append_event(
+                "error",
+                {
+                    "phase": "kernel",
+                    "cell_id": cell_id,
+                    "message": str(exc),
+                    "traceback": tb_lines,
+                },
+            )
+            self.console.print(Panel(f"커널 실행 중 오류가 발생했습니다: {exc}", title=f"{cell_id} · 오류", style="red"))
+            excerpt = "".join(tb_lines).strip()
+            if excerpt:
+                self.codebook.log_system_message("커널 오류", f"{exc}\n\n```text\n{excerpt}\n```")
+            else:
+                self.codebook.log_system_message("커널 오류", str(exc))
+            return
         finally:
             self._animation.stop()
         self.store.append_event(
@@ -327,14 +364,24 @@ class JT2Repl:
             self._install_prompts.add(module)
             return
         self._install_prompts.add(module)
-        self.console.print(f"`uv pip install {module}` 실행 중...")
+        installer_cmd = None
+        installer_label = None
+        if shutil.which("uv"):
+            installer_cmd = ["uv", "pip", "install", module]
+            installer_label = "uv pip install"
+        elif shutil.which("pip"):
+            installer_cmd = ["pip", "install", module]
+            installer_label = "pip install"
+        if installer_cmd is None:
+            self.console.print("`uv` 또는 `pip` 명령을 찾을 수 없습니다. 수동으로 패키지를 설치해주세요.")
+            return
+
+        self.console.print(f"`{installer_label} {module}` 실행 중...")
         try:
-            subprocess.run(["uv", "pip", "install", module], check=True)
+            subprocess.run(installer_cmd, check=True)
             self.console.print(f"설치 완료: {module}")
         except subprocess.CalledProcessError as exc:
             self.console.print(f"설치 실패: {exc}")
-        except FileNotFoundError:
-            self.console.print("`uv` 명령을 찾을 수 없습니다. 수동으로 패키지를 설치해주세요.")
 
     def _extract_missing_module(self, message: str) -> Optional[str]:
         match = re.search(r"named ['\"]([^'\"]+)['\"]", message)

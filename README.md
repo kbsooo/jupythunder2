@@ -21,6 +21,9 @@ uv venv
 source .venv/bin/activate
 uv pip install .
 
+# 데이터 분석 도구가 필요한 경우 (선택)
+uv pip install .[analysis]
+
 # 최초 실행 (LLM이 없어도 기본 명령어/커널 실행은 가능)
 jt2
 ```
@@ -48,6 +51,8 @@ codebook_root = "codes"
 run_root = "runs"
 max_execution_seconds = 60
 history_limit = 10
+llm_host = "http://localhost:11434"
+llm_request_timeout = 30
 ```
 
 `jt2 --config /path/to/config.toml` 형태로 다른 설정 파일을 지정할 수도 있습니다. `--dry-run` 옵션을 사용하면 설정만 출력하고 REPL에 진입하지 않습니다.
@@ -60,7 +65,7 @@ history_limit = 10
 ## 개발 노트
 - 패키지 버전: Python 3.12
 - 주요 라이브러리: Typer, prompt-toolkit, rich, jupyter-client, pydantic, ollama
-- 테스트: `pytest`
+- 테스트: `uv pip install .[dev]` 또는 `pip install -e .[dev]`로 개발 의존성을 설치한 뒤 `pytest`
 - 린트/포맷: `ruff check .`, `ruff format .`
 
 ## 다음 단계 아이디어
